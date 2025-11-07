@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+
+<body>
+    <canvas id="gameCanvas" style="width: 100vw; height: 100vh;"></canvas>
+    <script>
+        console.log('Starting test...');
+        console.log('THREE:', typeof THREE);
+
+        try {
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 10, 20);
+
+            const canvas = document.getElementById('gameCanvas');
+            const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+            // Add a test cube
+            const geometry = new THREE.BoxGeometry(2, 2, 2);
+            const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
+
+            camera.lookAt(0, 0, 0);
+
+            function animate() {
+                requestAnimationFrame(animate);
+                cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
+                renderer.render(scene, camera);
+            }
+
+            animate();
+            console.log('Test successful!');
+        } catch (e) {
+            console.error('Error:', e);
+            document.body.innerHTML = '<h1 style="color: white;">Error: ' + e.message + '</h1>';
+        }
+    </script>
+</body>
+
+</html>

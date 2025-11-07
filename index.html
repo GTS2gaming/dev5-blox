@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,6 +8,7 @@
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
+
 <body>
     <div id="gameContainer">
         <!-- Main Menu -->
@@ -15,11 +17,13 @@
                 <h1>Pirate Fruit Adventure</h1>
                 <div class="faction-selection">
                     <button class="faction-btn pirate" onclick="selectFaction('pirate')">
-                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23ff4444'/%3E%3Ctext x='50' y='55' text-anchor='middle' fill='white' font-size='20'%3E⚔️%3C/text%3E%3C/svg%3E" alt="Pirate">
+                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23ff4444'/%3E%3Ctext x='50' y='55' text-anchor='middle' fill='white' font-size='20'%3E⚔️%3C/text%3E%3C/svg%3E"
+                            alt="Pirate">
                         <span>Pirates</span>
                     </button>
                     <button class="faction-btn marine" onclick="selectFaction('marine')">
-                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%234444ff'/%3E%3Ctext x='50' y='55' text-anchor='middle' fill='white' font-size='20'%3E⚓%3C/text%3E%3C/svg%3E" alt="Marine">
+                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%234444ff'/%3E%3Ctext x='50' y='55' text-anchor='middle' fill='white' font-size='20'%3E⚓%3C/text%3E%3C/svg%3E"
+                            alt="Marine">
                         <span>Marines</span>
                     </button>
                 </div>
@@ -40,30 +44,76 @@
                     </div>
                     <div class="stats">
                         <span id="playerHealth">HP: 100/100</span>
+                        <span id="playerEnergy">Energy: 100/100</span>
                         <span id="playerMoney">💰 1000</span>
                     </div>
                 </div>
-                
+
                 <div class="current-fruit">
                     <span>Current Fruit:</span>
                     <div id="currentFruit">None</div>
                 </div>
 
                 <div class="controls">
-                    <button onclick="openShop()">🛒 Fruit Shop</button>
+                    <button onclick="openShop()">🛒 Shop</button>
                     <button onclick="openInventory()">🎒 Inventory</button>
-                    <button onclick="toggleMap()">🗺️ Map</button>
+                    <button onclick="openQuestMenu()">📜 Quests</button>
+                    <button onclick="openStats()">� Stats<b /button>
+                            <button onclick="toggleMap()">🗺️ Map</button>
                 </div>
             </div>
 
-            <!-- Game Canvas -->
-            <canvas id="gameCanvas"></canvas>
+            <!-- Move Display -->
+            <div id="moveDisplay" class="move-display"></div>
+
+            <!-- Quest Display -->
+            <div id="questDisplay" class="quest-display">
+                <div id="questInfo">No active quest</div>
+            </div>
+
+            <!-- Combat Info -->
+            <div id="combatInfo" class="combat-info">
+                <div>Z/X/C/V - Fruit Moves | SPACE - Melee</div>
+                <div id="enemyCount">Enemies: 0</div>
+            </div>
+
+            <!-- Damage Numbers Container -->
+            <div id="damageNumbers"></div>
+
+            <!-- Stats Menu -->
+            <div id="statsMenu" class="modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>📊 Player Stats</h2>
+                        <button class="close-btn" onclick="closeStats()">&times;</button>
+                    </div>
+                    <div id="statsContent" class="stats-content">
+                        <!-- Stats will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quest Menu -->
+            <div id="questMenu" class="modal">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>📜 Quest Board</h2>
+                        <button class="close-btn" onclick="closeQuestMenu()">&times;</button>
+                    </div>
+                    <div class="quest-list" id="questList">
+                        <!-- Quests will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
 
             <!-- Zoom Controls -->
             <div class="zoom-controls">
                 <button onclick="zoomIn()">🔍+</button>
                 <button onclick="zoomOut()">🔍-</button>
             </div>
+
+            <!-- Game Canvas -->
+            <canvas id="gameCanvas"></canvas>
         </div>
 
         <!-- Fruit Shop -->
@@ -129,4 +179,5 @@
 
     <script src="game.js"></script>
 </body>
+
 </html>
