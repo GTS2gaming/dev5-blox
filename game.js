@@ -16,11 +16,14 @@ let gameState = {
         equippedMoves: [null, null, null, null], // 4 move slots (Z, X, C, V)
         position: { x: 0, y: 0, z: 0 },
         rotation: 0,
-        velocity: { x: 0, z: 0 },
+        velocity: { x: 0, y: 0, z: 0 },
         currentIsland: 'starter',
         isAttacking: false,
         attackCooldown: 0,
         currentQuest: null,
+        isJumping: false,
+        jumpVelocity: 0,
+        onGround: true,
         stats: {
             melee: 1,
             defense: 1,
@@ -32,7 +35,9 @@ let gameState = {
     camera: {
         distance: 20,
         height: 10,
-        angle: 0
+        angle: 0,
+        pitch: 0, // Vertical rotation (looking up/down)
+        shiftLock: false // Shift lock mode
     },
     keys: {},
     enemies: [],
@@ -206,41 +211,67 @@ function initGame() {
     
     // Initialize Three.js
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87CEEB);
-    scene.fog = new THREE.Fog(0x87CEEB, 50, 200);
+    
+    // Realistic sky gradient
+    const skyColor = new THREE.Color(0x87CEEB);
+    const horizonColor = new THREE.Color(0xB0E0E6);
+    scene.background = skyColor;
+    scene.fog = new THREE.FogExp2(0x87CEEB, 0.0015);
 
-    // Setup camera
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 10, 20);
+    // Setup camera with better FOV
+    camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 15, 25);
 
-    // Setup renderer
+    // Setup renderer with maximum quality
     const canvas = document.getElementById('gameCanvas');
     if (!canvas) {
         throw new Error('Canvas element not found!');
     }
     
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer = new THREE.WebGLRenderer({ 
+        canvas, 
+        antialias: true,
+        powerPreference: "high-performance"
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.physicallyCorrectLights = true;
     
     console.log('Renderer created:', renderer.domElement.width, 'x', renderer.domElement.height);
 
-    // Add lights
+    // Realistic lighting setup
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(50, 100, 50);
-    directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 2048;
-    directionalLight.shadow.mapSize.height = 2048;
-    directionalLight.shadow.camera.far = 200;
-    directionalLight.shadow.camera.left = -100;
-    directionalLight.shadow.camera.right = 100;
-    directionalLight.shadow.camera.top = 100;
-    directionalLight.shadow.camera.bottom = -100;
-    scene.add(directionalLight);
+    // Sun light
+    const sunLight = new THREE.DirectionalLight(0xfff5e6, 1.5);
+    sunLight.position.set(100, 150, 50);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 4096;
+    sunLight.shadow.mapSize.height = 4096;
+    sunLight.shadow.camera.near = 0.5;
+    sunLight.shadow.camera.far = 500;
+    sunLight.shadow.camera.left = -100;
+    sunLight.shadow.camera.right = 100;
+    sunLight.shadow.camera.top = 100;
+    sunLight.shadow.camera.bottom = -100;
+    sunLight.shadow.bias = -0.0001;
+    sunLight.shadow.normalBias = 0.02;
+    scene.add(sunLight);
+
+    // Hemisphere light for realistic sky lighting
+    const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x8B7355, 0.5);
+    scene.add(hemiLight);
+
+    // Add point lights for better character visibility
+    const playerLight = new THREE.PointLight(0xffffff, 0.3, 50);
+    playerLight.position.set(0, 10, 0);
+    scene.add(playerLight);
 
     console.log('Creating world...');
     
@@ -250,11 +281,8 @@ function initGame() {
     // Create island
     createIsland();
 
-    // Don't create player yet - wait for faction selection
-    // createPlayer();
-
-    // Don't spawn enemies yet - wait for faction selection
-    // spawnEnemies();
+    // Add skybox/atmosphere
+    createSkybox();
 
     // Handle window resize
     window.addEventListener('resize', onWindowResize);
@@ -266,6 +294,41 @@ function initGame() {
     gameLoop();
     
     console.log('Game loop started');
+}
+
+function createSkybox() {
+    // Create a simple gradient skybox
+    const skyGeo = new THREE.SphereGeometry(500, 32, 15);
+    const skyMat = new THREE.ShaderMaterial({
+        uniforms: {
+            topColor: { value: new THREE.Color(0x0077ff) },
+            bottomColor: { value: new THREE.Color(0xffffff) },
+            offset: { value: 33 },
+            exponent: { value: 0.6 }
+        },
+        vertexShader: `
+            varying vec3 vWorldPosition;
+            void main() {
+                vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                vWorldPosition = worldPosition.xyz;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 topColor;
+            uniform vec3 bottomColor;
+            uniform float offset;
+            uniform float exponent;
+            varying vec3 vWorldPosition;
+            void main() {
+                float h = normalize(vWorldPosition + offset).y;
+                gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0);
+            }
+        `,
+        side: THREE.BackSide
+    });
+    const sky = new THREE.Mesh(skyGeo, skyMat);
+    scene.add(sky);
 }
 
 // Spawn enemies
@@ -304,31 +367,64 @@ function spawnEnemy(type) {
         targetPosition: { x, z }
     };
 
-    // Create enemy mesh
+    // Create enemy mesh (Roblox style)
     const enemyGroup = new THREE.Group();
 
-    // Body
-    const bodyGeometry = new THREE.BoxGeometry(1, 1.5, 0.5);
-    const bodyMaterial = new THREE.MeshStandardMaterial({ color: type.color });
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-    body.position.y = 1;
-    body.castShadow = true;
-    enemyGroup.add(body);
-
-    // Head
-    const headGeometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+    // Head (Roblox style)
+    const headGeometry = new THREE.BoxGeometry(1.1, 1.1, 1.1);
     const headMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
     const head = new THREE.Mesh(headGeometry, headMaterial);
-    head.position.y = 2.2;
+    head.position.y = 2.7;
     head.castShadow = true;
     enemyGroup.add(head);
+
+    // Torso (Roblox style)
+    const torsoGeometry = new THREE.BoxGeometry(1.5, 1.7, 0.7);
+    const torsoMaterial = new THREE.MeshStandardMaterial({ color: type.color });
+    const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
+    torso.position.y = 1.4;
+    torso.castShadow = true;
+    enemyGroup.add(torso);
+
+    // Arms (Roblox style)
+    const armGeometry = new THREE.CylinderGeometry(0.23, 0.23, 1.4, 8);
+    const armMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+    
+    const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+    leftArm.position.set(-1.0, 1.4, 0);
+    leftArm.castShadow = true;
+    enemyGroup.add(leftArm);
+    
+    const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+    rightArm.position.set(1.0, 1.4, 0);
+    rightArm.castShadow = true;
+    enemyGroup.add(rightArm);
+
+    // Legs (Roblox style)
+    const legGeometry = new THREE.CylinderGeometry(0.28, 0.28, 1.5, 8);
+    const legMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+    
+    const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+    leftLeg.position.set(-0.35, 0.25, 0);
+    leftLeg.castShadow = true;
+    enemyGroup.add(leftLeg);
+    
+    const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+    rightLeg.position.set(0.35, 0.25, 0);
+    rightLeg.castShadow = true;
+    enemyGroup.add(rightLeg);
+
+    // Enemy name tag
+    const nameTag = createEnemyNameTag(enemy);
+    nameTag.position.y = 4.2;
+    enemyGroup.add(nameTag);
 
     // Health bar background
     const healthBarBg = new THREE.Mesh(
         new THREE.PlaneGeometry(1.5, 0.2),
         new THREE.MeshBasicMaterial({ color: 0x000000 })
     );
-    healthBarBg.position.y = 3.5;
+    healthBarBg.position.y = 3.8;
     enemyGroup.add(healthBarBg);
 
     // Health bar fill
@@ -336,7 +432,7 @@ function spawnEnemy(type) {
         new THREE.PlaneGeometry(1.5, 0.15),
         new THREE.MeshBasicMaterial({ color: 0x00ff00 })
     );
-    healthBarFill.position.y = 3.5;
+    healthBarFill.position.y = 3.8;
     healthBarFill.position.z = 0.01;
     enemyGroup.add(healthBarFill);
 
@@ -349,6 +445,32 @@ function spawnEnemy(type) {
     gameState.enemies.push(enemy);
 }
 
+function createEnemyNameTag(enemy) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    
+    // Background
+    ctx.fillStyle = 'rgba(139, 69, 19, 0.8)';
+    ctx.fillRect(0, 0, 256, 64);
+    
+    // Text
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Lv.${enemy.level} ${enemy.type}`, 128, 25);
+    ctx.font = '16px Arial';
+    ctx.fillText(`${enemy.health}/${enemy.maxHealth} HP`, 128, 45);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+    const geometry = new THREE.PlaneGeometry(3, 0.75);
+    const nameTag = new THREE.Mesh(geometry, material);
+    
+    return nameTag;
+}
+
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -358,22 +480,51 @@ function onWindowResize() {
 // Faction selection
 function selectFaction(faction) {
     console.log('Faction selected:', faction);
-    gameState.player.faction = faction;
-    document.getElementById('mainMenu').classList.remove('active');
-    document.getElementById('gameScreen').classList.add('active');
-
-    // Recreate player with faction color
-    if (playerMesh) {
-        scene.remove(playerMesh);
-    }
-    createPlayer();
     
-    // Spawn enemies
-    spawnEnemies();
+    try {
+        gameState.player.faction = faction;
+        gameState.player.invincible = true;
+        
+        // Force hide main menu and show game screen
+        const mainMenu = document.getElementById('mainMenu');
+        const gameScreen = document.getElementById('gameScreen');
+        
+        // Remove active class from menu
+        mainMenu.classList.remove('active');
+        mainMenu.style.display = 'none';
+        
+        // Add active class to game screen
+        gameScreen.classList.add('active');
+        gameScreen.style.display = 'block';
+        
+        console.log('Switched to game screen');
 
-    updateHUD();
-    console.log('Game started! Canvas size:', renderer.domElement.width, 'x', renderer.domElement.height);
+        // Create player
+        if (playerMesh) {
+            scene.remove(playerMesh);
+        }
+        createPlayer();
+        
+        // Spawn enemies
+        spawnEnemies();
+
+        // Update HUD
+        updateHUD();
+        
+        // Remove invincibility after 5 seconds
+        setTimeout(() => {
+            gameState.player.invincible = false;
+        }, 5000);
+        
+        console.log('Game started successfully!');
+    } catch (error) {
+        console.error('Error starting game:', error);
+        alert('Error starting game: ' + error.message);
+    }
 }
+
+// Make sure function is globally accessible
+window.selectFaction = selectFaction;
 
 // Create 3D Ocean
 function createOcean() {
@@ -406,136 +557,364 @@ function createOcean() {
 }
 
 // Create 3D Island
+// Create 3D Island (Starter Island with buildings and dock)
 function createIsland() {
     const islandGroup = new THREE.Group();
-
-    // Island base (sand/dirt)
-    const baseGeometry = new THREE.CylinderGeometry(30, 35, 5, 32);
-    const baseMaterial = new THREE.MeshStandardMaterial({ color: 0xC2B280 });
+    
+    // Main island base
+    const baseGeometry = new THREE.CylinderGeometry(40, 45, 4, 64);
+    const baseMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x8B7355,
+        roughness: 0.9
+    });
     const base = new THREE.Mesh(baseGeometry, baseMaterial);
     base.position.y = 0;
     base.castShadow = true;
     base.receiveShadow = true;
     islandGroup.add(base);
-
+    
     // Grass layer
-    const grassGeometry = new THREE.CylinderGeometry(29, 30, 1, 32);
-    const grassMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+    const grassGeometry = new THREE.CylinderGeometry(39, 40, 1, 64);
+    const grassMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x4a7c59,
+        roughness: 0.8
+    });
     const grass = new THREE.Mesh(grassGeometry, grassMaterial);
     grass.position.y = 2.5;
     grass.castShadow = true;
     grass.receiveShadow = true;
     islandGroup.add(grass);
-
-    // Add trees
-    for (let i = 0; i < 15; i++) {
-        const angle = (i / 15) * Math.PI * 2;
-        const radius = 10 + Math.random() * 15;
+    
+    // Central plaza/grass area
+    const plazaGeometry = new THREE.CylinderGeometry(15, 15, 0.2, 32);
+    const plazaMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x5a8c69,
+        roughness: 0.7
+    });
+    const plaza = new THREE.Mesh(plazaGeometry, plazaMaterial);
+    plaza.position.y = 3.1;
+    plaza.receiveShadow = true;
+    islandGroup.add(plaza);
+    
+    // Create buildings around the island
+    createBuilding(islandGroup, -15, 3, -10, 0xff6b6b, 'red'); // Red building
+    createBuilding(islandGroup, 15, 3, -10, 0x6b6bff, 'blue'); // Blue building
+    createBuilding(islandGroup, -20, 3, 10, 0xffeb3b, 'yellow'); // Yellow building
+    createBuilding(islandGroup, 20, 3, 10, 0xff9800, 'orange'); // Orange building
+    createBuilding(islandGroup, 0, 3, -20, 0x9c27b0, 'purple'); // Purple building
+    createBuilding(islandGroup, 0, 3, 20, 0x4caf50, 'green'); // Green building
+    
+    // Create dock
+    createDock(islandGroup);
+    
+    // Add palm trees
+    for (let i = 0; i < 20; i++) {
+        const angle = (i / 20) * Math.PI * 2;
+        const radius = 25 + Math.random() * 10;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
-        const tree = createTree();
+        const tree = createPalmTree();
         tree.position.set(x, 3, z);
+        tree.rotation.y = Math.random() * Math.PI * 2;
         islandGroup.add(tree);
     }
-
-    // Add rocks
+    
+    // Add decorative rocks
     for (let i = 0; i < 10; i++) {
         const angle = Math.random() * Math.PI * 2;
-        const radius = 5 + Math.random() * 20;
+        const radius = 15 + Math.random() * 20;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
         const rock = createRock();
         rock.position.set(x, 3, z);
         islandGroup.add(rock);
     }
-
+    
     scene.add(islandGroup);
     return islandGroup;
 }
 
-function createTree() {
-    const tree = new THREE.Group();
+function createBuilding(parent, x, y, z, color, roofColor) {
+    const building = new THREE.Group();
+    
+    // Building base
+    const wallGeometry = new THREE.BoxGeometry(6, 8, 6);
+    const wallMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0xf5f5dc,
+        roughness: 0.8
+    });
+    const walls = new THREE.Mesh(wallGeometry, wallMaterial);
+    walls.position.y = 4;
+    walls.castShadow = true;
+    walls.receiveShadow = true;
+    building.add(walls);
+    
+    // Roof
+    const roofGeometry = new THREE.ConeGeometry(5, 3, 4);
+    const roofMaterial = new THREE.MeshStandardMaterial({ 
+        color: color,
+        roughness: 0.7
+    });
+    const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+    roof.position.y = 9.5;
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    building.add(roof);
+    
+    // Door
+    const doorGeometry = new THREE.BoxGeometry(1.5, 3, 0.2);
+    const doorMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x8B4513,
+        roughness: 0.9
+    });
+    const door = new THREE.Mesh(doorGeometry, doorMaterial);
+    door.position.set(0, 1.5, 3.1);
+    building.add(door);
+    
+    // Windows
+    const windowGeometry = new THREE.BoxGeometry(1, 1, 0.2);
+    const windowMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x87CEEB,
+        roughness: 0.3,
+        metalness: 0.5
+    });
+    
+    const window1 = new THREE.Mesh(windowGeometry, windowMaterial);
+    window1.position.set(-1.5, 5, 3.1);
+    building.add(window1);
+    
+    const window2 = new THREE.Mesh(windowGeometry, windowMaterial);
+    window2.position.set(1.5, 5, 3.1);
+    building.add(window2);
+    
+    building.position.set(x, y, z);
+    parent.add(building);
+}
 
-    // Trunk
-    const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.5, 4, 8);
-    const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+function createDock(parent) {
+    const dock = new THREE.Group();
+    
+    // Main dock platform
+    const dockGeometry = new THREE.BoxGeometry(8, 0.5, 20);
+    const dockMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x8B7355,
+        roughness: 0.9
+    });
+    const dockPlatform = new THREE.Mesh(dockGeometry, dockMaterial);
+    dockPlatform.position.set(30, 1, 0);
+    dockPlatform.castShadow = true;
+    dockPlatform.receiveShadow = true;
+    dock.add(dockPlatform);
+    
+    // Dock posts
+    for (let i = 0; i < 5; i++) {
+        const postGeometry = new THREE.CylinderGeometry(0.3, 0.3, 4, 8);
+        const postMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x654321,
+            roughness: 0.9
+        });
+        const post = new THREE.Mesh(postGeometry, postMaterial);
+        post.position.set(30, -1, -8 + i * 4);
+        post.castShadow = true;
+        dock.add(post);
+    }
+    
+    // Connecting path
+    const pathGeometry = new THREE.BoxGeometry(4, 0.3, 15);
+    const pathMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x9B8B7E,
+        roughness: 0.8
+    });
+    const path = new THREE.Mesh(pathGeometry, pathMaterial);
+    path.position.set(24, 2.8, 0);
+    path.receiveShadow = true;
+    dock.add(path);
+    
+    parent.add(dock);
+}
+
+function createPalmTree() {
+    const tree = new THREE.Group();
+    
+    // Trunk (curved)
+    const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.4, 6, 8);
+    const trunkMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x8B6914,
+        roughness: 0.9
+    });
     const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
     trunk.castShadow = true;
+    trunk.receiveShadow = true;
     tree.add(trunk);
-
-    // Leaves
-    const leavesGeometry = new THREE.SphereGeometry(2, 8, 8);
-    const leavesMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
-    const leaves = new THREE.Mesh(leavesGeometry, leavesMaterial);
-    leaves.position.y = 3;
-    leaves.castShadow = true;
-    tree.add(leaves);
-
+    
+    // Palm leaves
+    const leafMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x228B22,
+        roughness: 0.7,
+        side: THREE.DoubleSide
+    });
+    
+    for (let i = 0; i < 8; i++) {
+        const leafGeometry = new THREE.BoxGeometry(0.4, 0.1, 4);
+        const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
+        leaf.position.y = 3;
+        leaf.rotation.y = (i / 8) * Math.PI * 2;
+        leaf.rotation.z = -0.4;
+        leaf.castShadow = true;
+        tree.add(leaf);
+    }
+    
+    // Coconuts
+    for (let i = 0; i < 3; i++) {
+        const coconutGeometry = new THREE.SphereGeometry(0.3, 8, 8);
+        const coconutMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x8B4513,
+            roughness: 0.8
+        });
+        const coconut = new THREE.Mesh(coconutGeometry, coconutMaterial);
+        coconut.position.set(
+            Math.cos(i * 2) * 0.5,
+            2.5,
+            Math.sin(i * 2) * 0.5
+        );
+        coconut.castShadow = true;
+        tree.add(coconut);
+    }
+    
     return tree;
 }
 
 function createRock() {
-    const rockGeometry = new THREE.DodecahedronGeometry(0.5 + Math.random() * 0.5, 0);
-    const rockMaterial = new THREE.MeshStandardMaterial({ color: 0x808080 });
+    const size = 0.5 + Math.random() * 0.8;
+    const rockGeometry = new THREE.DodecahedronGeometry(size, 0);
+    const rockMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x696969,
+        roughness: 0.95
+    });
     const rock = new THREE.Mesh(rockGeometry, rockMaterial);
     rock.castShadow = true;
     rock.receiveShadow = true;
+    rock.rotation.set(
+        Math.random() * Math.PI,
+        Math.random() * Math.PI,
+        Math.random() * Math.PI
+    );
     return rock;
 }
 
-// Create 3D Player
+// Create 3D Player (Roblox style)
 function createPlayer() {
     player = new THREE.Group();
 
     const color = gameState.player.faction === 'pirate' ? 0xFF4444 : 0x4444FF;
 
-    // Body
-    const bodyGeometry = new THREE.BoxGeometry(1, 1.5, 0.5);
-    const bodyMaterial = new THREE.MeshStandardMaterial({ color });
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-    body.position.y = 1;
-    body.castShadow = true;
-    player.add(body);
-
-    // Head
-    const headGeometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+    // Head (Roblox style - bigger and more cubic)
+    const headGeometry = new THREE.BoxGeometry(1.2, 1.2, 1.2);
     const headMaterial = new THREE.MeshStandardMaterial({ color: 0xFFDBAC });
     const head = new THREE.Mesh(headGeometry, headMaterial);
-    head.position.y = 2.2;
+    head.position.y = 2.8;
     head.castShadow = true;
     player.add(head);
-
-    // Arms
-    const armGeometry = new THREE.BoxGeometry(0.3, 1, 0.3);
+    
+    // Torso (Roblox style - rectangular)
+    const torsoGeometry = new THREE.BoxGeometry(1.6, 1.8, 0.8);
+    const torsoMaterial = new THREE.MeshStandardMaterial({ color });
+    const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
+    torso.position.y = 1.5;
+    torso.castShadow = true;
+    player.add(torso);
+    
+    // Arms (Roblox style - cylindrical)
+    const armGeometry = new THREE.CylinderGeometry(0.25, 0.25, 1.5, 8);
     const armMaterial = new THREE.MeshStandardMaterial({ color: 0xFFDBAC });
-
+    
     const leftArm = new THREE.Mesh(armGeometry, armMaterial);
-    leftArm.position.set(-0.65, 1, 0);
+    leftArm.position.set(-1.1, 1.5, 0);
     leftArm.castShadow = true;
     player.add(leftArm);
-
+    
     const rightArm = new THREE.Mesh(armGeometry, armMaterial);
-    rightArm.position.set(0.65, 1, 0);
+    rightArm.position.set(1.1, 1.5, 0);
     rightArm.castShadow = true;
     player.add(rightArm);
-
-    // Legs
-    const legGeometry = new THREE.BoxGeometry(0.4, 1, 0.4);
+    
+    // Legs (Roblox style - cylindrical)
+    const legGeometry = new THREE.CylinderGeometry(0.3, 0.3, 1.6, 8);
     const legMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
-
+    
     const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
-    leftLeg.position.set(-0.3, 0.2, 0);
+    leftLeg.position.set(-0.4, 0.3, 0);
     leftLeg.castShadow = true;
     player.add(leftLeg);
-
+    
     const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
-    rightLeg.position.set(0.3, 0.2, 0);
+    rightLeg.position.set(0.4, 0.3, 0);
     rightLeg.castShadow = true;
     player.add(rightLeg);
+    
+    // Add face (Roblox style)
+    const faceGeometry = new THREE.PlaneGeometry(0.8, 0.6);
+    const faceTexture = createFaceTexture();
+    const faceMaterial = new THREE.MeshBasicMaterial({ map: faceTexture, transparent: true });
+    const face = new THREE.Mesh(faceGeometry, faceMaterial);
+    face.position.set(0, 2.8, 0.61);
+    player.add(face);
+    
+    // Player name tag (Roblox style)
+    const nameTag = createNameTag();
+    nameTag.position.y = 4;
+    player.add(nameTag);
 
     player.position.set(0, 3, 0);
     scene.add(player);
     playerMesh = player;
+}
+
+function createFaceTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    
+    // Face background
+    ctx.fillStyle = '#FFDBAC';
+    ctx.fillRect(0, 0, 64, 64);
+    
+    // Eyes
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(15, 20, 8, 8);
+    ctx.fillRect(41, 20, 8, 8);
+    
+    // Mouth
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(25, 40, 14, 4);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    return texture;
+}
+
+function createNameTag() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    
+    // Background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, 256, 64);
+    
+    // Text
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Level ${gameState.player.level} ${gameState.player.faction}`, 128, 40);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+    const geometry = new THREE.PlaneGeometry(4, 1);
+    const nameTag = new THREE.Mesh(geometry, material);
+    
+    return nameTag;
 }
 
 // Game loop
@@ -556,8 +935,14 @@ function update() {
     // Always update camera
     updateCamera();
     
-    // Only update game logic if faction is selected
+    // Only update game logic if faction is selected and player is alive
     if (!gameState.player.faction) return;
+    
+    // Check if death screen is active - if so, don't update game
+    const deathScreen = document.getElementById('deathScreen');
+    if (deathScreen && deathScreen.classList.contains('active')) {
+        return;
+    }
 
     // Update player movement
     updatePlayerMovement();
@@ -590,66 +975,172 @@ function update() {
 }
 
 function updatePlayerMovement() {
-    const speed = 0.15;
+    const speed = 0.2;
 
-    let moveX = 0;
-    let moveZ = 0;
+    let moveForward = 0;
+    let moveRight = 0;
 
-    // WASD movement relative to camera
+    // WASD movement - consistent in all views
     if (gameState.keys['w'] || gameState.keys['W'] || gameState.keys['ArrowUp']) {
-        moveZ = -1;
+        moveForward = 1; // Move forward
     }
     if (gameState.keys['s'] || gameState.keys['S'] || gameState.keys['ArrowDown']) {
-        moveZ = 1;
+        moveForward = -1; // Move backward
     }
     if (gameState.keys['a'] || gameState.keys['A'] || gameState.keys['ArrowLeft']) {
-        moveX = -1;
+        moveRight = 1; // Move left (positive right = left due to perpendicular calculation)
     }
     if (gameState.keys['d'] || gameState.keys['D'] || gameState.keys['ArrowRight']) {
-        moveX = 1;
+        moveRight = -1; // Move right (negative right = right due to perpendicular calculation)
     }
 
-    // Apply movement relative to camera angle
-    if (moveX !== 0 || moveZ !== 0) {
+    // Apply movement in the direction camera is facing
+    if (moveForward !== 0 || moveRight !== 0) {
         // Normalize movement vector
-        const length = Math.sqrt(moveX * moveX + moveZ * moveZ);
-        moveX /= length;
-        moveZ /= length;
+        const length = Math.sqrt(moveForward * moveForward + moveRight * moveRight);
+        moveForward /= length;
+        moveRight /= length;
 
-        // Apply camera rotation to movement
+        // Calculate movement direction based on camera angle
+        // Camera angle determines forward direction
         const cameraAngle = gameState.camera.angle;
-        const rotatedX = moveX * Math.cos(cameraAngle) - moveZ * Math.sin(cameraAngle);
-        const rotatedZ = moveX * Math.sin(cameraAngle) + moveZ * Math.cos(cameraAngle);
+        
+        // In first-person, forward is where camera looks; in third-person, it's opposite
+        const isFirstPerson = gameState.camera.distance <= 5;
+        const forwardMultiplier = isFirstPerson ? 1 : -1;
+        
+        // Forward direction
+        const forwardX = forwardMultiplier * Math.sin(cameraAngle) * moveForward;
+        const forwardZ = forwardMultiplier * Math.cos(cameraAngle) * moveForward;
+        
+        // Right direction is perpendicular to forward (same multiplier for consistency)
+        const rightX = forwardMultiplier * Math.sin(cameraAngle + Math.PI / 2) * moveRight;
+        const rightZ = forwardMultiplier * Math.cos(cameraAngle + Math.PI / 2) * moveRight;
+        
+        // Combine forward and right movement
+        const moveX = forwardX + rightX;
+        const moveZ = forwardZ + rightZ;
 
-        gameState.player.position.x += rotatedX * speed;
-        gameState.player.position.z += rotatedZ * speed;
+        // Calculate new position
+        const newX = gameState.player.position.x + moveX * speed;
+        const newZ = gameState.player.position.z + moveZ * speed;
 
-        // Rotate player to face movement direction
-        gameState.player.rotation = Math.atan2(rotatedX, rotatedZ);
+        // Check collision with buildings and boundaries
+        if (!checkCollision(newX, newZ)) {
+            gameState.player.position.x = newX;
+            gameState.player.position.z = newZ;
+        }
 
-        // Keep player on island (simple boundary)
+        // Rotate player to face movement direction (or camera direction in shift lock)
+        if (gameState.camera.shiftLock) {
+            // In shift lock, player faces opposite to camera (faces forward)
+            gameState.player.rotation = gameState.camera.angle + Math.PI;
+        } else {
+            // Normal mode, player faces movement direction
+            gameState.player.rotation = Math.atan2(moveX, moveZ);
+        }
+
+        // Add walking animation
+        const time = Date.now() * 0.01;
+        gameState.player.walkAnimation = Math.sin(time) * 0.1;
+
+        // Keep player on island
         const distFromCenter = Math.sqrt(
             gameState.player.position.x ** 2 +
             gameState.player.position.z ** 2
         );
-        if (distFromCenter > 25) {
+        if (distFromCenter > 35) {
             const normalizeAngle = Math.atan2(gameState.player.position.x, gameState.player.position.z);
-            gameState.player.position.x = Math.sin(normalizeAngle) * 25;
-            gameState.player.position.z = Math.cos(normalizeAngle) * 25;
+            gameState.player.position.x = Math.sin(normalizeAngle) * 35;
+            gameState.player.position.z = Math.cos(normalizeAngle) * 35;
         }
+    } else {
+        gameState.player.walkAnimation = 0;
     }
 
     // Update player mesh position
     if (playerMesh) {
         playerMesh.position.x = gameState.player.position.x;
         playerMesh.position.z = gameState.player.position.z;
+        playerMesh.position.y = gameState.player.position.y + (gameState.player.walkAnimation || 0);
         playerMesh.rotation.y = gameState.player.rotation;
+
+        // Animate arms and legs while walking
+        if (Math.abs(moveForward) > 0 || Math.abs(moveRight) > 0) {
+            const time = Date.now() * 0.01;
+            const armSwing = Math.sin(time) * 0.3;
+            const legSwing = Math.sin(time + Math.PI) * 0.2;
+
+            if (playerMesh.children[2]) playerMesh.children[2].rotation.x = armSwing;
+            if (playerMesh.children[3]) playerMesh.children[3].rotation.x = -armSwing;
+            if (playerMesh.children[4]) playerMesh.children[4].rotation.x = legSwing;
+            if (playerMesh.children[5]) playerMesh.children[5].rotation.x = -legSwing;
+        } else {
+            if (playerMesh.children[2]) playerMesh.children[2].rotation.x = 0;
+            if (playerMesh.children[3]) playerMesh.children[3].rotation.x = 0;
+            if (playerMesh.children[4]) playerMesh.children[4].rotation.x = 0;
+            if (playerMesh.children[5]) playerMesh.children[5].rotation.x = 0;
+        }
+    }
+
+    // Jump physics
+    const gravity = -0.5;
+    const groundLevel = 3; // Island surface level
+    
+    // Apply gravity
+    gameState.player.velocity.y += gravity;
+    gameState.player.position.y += gameState.player.velocity.y;
+    
+    // Check if on ground
+    if (gameState.player.position.y <= groundLevel) {
+        gameState.player.position.y = groundLevel;
+        gameState.player.velocity.y = 0;
+        gameState.player.onGround = true;
+        gameState.player.isJumping = false;
+    } else {
+        gameState.player.onGround = false;
     }
 
     // Regenerate energy
     if (gameState.player.energy < gameState.player.maxEnergy) {
-        gameState.player.energy = Math.min(gameState.player.maxEnergy, gameState.player.energy + 0.1);
+        gameState.player.energy = Math.min(gameState.player.maxEnergy, gameState.player.energy + 0.15);
     }
+}
+
+function playerJump() {
+    if (gameState.player.onGround && !gameState.player.isJumping) {
+        gameState.player.isJumping = true;
+        gameState.player.velocity.y = 0.8; // Jump strength
+        gameState.player.onGround = false;
+    }
+}
+
+// Collision detection with buildings
+function checkCollision(x, z) {
+    // Building positions (from createBuilding calls)
+    const buildings = [
+        { x: -15, z: -10, size: 6 },
+        { x: 15, z: -10, size: 6 },
+        { x: -20, z: 10, size: 6 },
+        { x: 20, z: 10, size: 6 },
+        { x: 0, z: -20, size: 6 },
+        { x: 0, z: 20, size: 6 }
+    ];
+
+    const playerRadius = 1.5; // Player collision radius
+
+    for (const building of buildings) {
+        const dx = x - building.x;
+        const dz = z - building.z;
+        const distance = Math.sqrt(dx * dx + dz * dz);
+        
+        // Check if player is too close to building
+        if (distance < (building.size / 2 + playerRadius)) {
+            return true; // Collision detected
+        }
+    }
+
+    return false; // No collision
 }
 
 function updateCamera() {
@@ -660,23 +1151,68 @@ function updateCamera() {
         return;
     }
     
-    // Camera follows player with offset
-    const offset = {
-        x: Math.sin(gameState.camera.angle) * gameState.camera.distance,
-        y: gameState.camera.height,
-        z: Math.cos(gameState.camera.angle) * gameState.camera.distance
-    };
+    // Check if we're in first-person mode (zoomed in all the way)
+    if (gameState.camera.distance <= 5) {
+        // First-person view - camera at player's eye level (head position)
+        const eyeHeight = 5.5; // Eye level for first-person view
+        
+        // Hide player mesh in first-person so we don't see our own body
+        playerMesh.visible = false;
+        
+        camera.position.x = gameState.player.position.x;
+        camera.position.y = gameState.player.position.y + eyeHeight;
+        camera.position.z = gameState.player.position.z;
+        
+        // Look in the direction the camera is facing with pitch (up/down)
+        const lookDistance = 10;
+        const lookX = gameState.player.position.x + Math.sin(gameState.camera.angle) * lookDistance;
+        const lookY = gameState.player.position.y + eyeHeight + Math.sin(gameState.camera.pitch) * lookDistance;
+        const lookZ = gameState.player.position.z + Math.cos(gameState.camera.angle) * lookDistance;
+        
+        camera.lookAt(lookX, lookY, lookZ);
+    } else {
+        // Third-person view - camera behind and above player
+        // Show player mesh in third-person
+        playerMesh.visible = true;
+        
+        // When close, camera should be at same height as head for straight view
+        // When far, camera can be higher for overview
+        let dynamicHeight;
+        let lookAtHeight;
+        
+        if (gameState.camera.distance < 10) {
+            // Close third-person - camera at head level looking straight
+            dynamicHeight = 6.5; // Higher above head
+            lookAtHeight = 6.0; // Look at head/face area
+        } else {
+            // Far third-person - camera above looking down
+            const heightRatio = 0.5;
+            const maxHeight = 15;
+            dynamicHeight = Math.min(maxHeight, gameState.camera.distance * heightRatio);
+            lookAtHeight = 2.5; // Look at upper body
+        }
+        
+        // In shift lock mode, offset the look-at point down so player appears below crosshair
+        if (gameState.camera.shiftLock) {
+            lookAtHeight += 1.0; // Camera looks slightly higher, player visible at bottom with crosshair above head
+        }
+        
+        const offset = {
+            x: Math.sin(gameState.camera.angle) * gameState.camera.distance,
+            y: dynamicHeight,
+            z: Math.cos(gameState.camera.angle) * gameState.camera.distance
+        };
 
-    camera.position.x = gameState.player.position.x + offset.x;
-    camera.position.y = gameState.player.position.y + offset.y;
-    camera.position.z = gameState.player.position.z + offset.z;
+        camera.position.x = gameState.player.position.x + offset.x;
+        camera.position.y = gameState.player.position.y + offset.y;
+        camera.position.z = gameState.player.position.z + offset.z;
 
-    // Look at player
-    camera.lookAt(
-        gameState.player.position.x,
-        gameState.player.position.y + 2,
-        gameState.player.position.z
-    );
+        camera.lookAt(
+            gameState.player.position.x,
+            gameState.player.position.y + lookAtHeight,
+            gameState.player.position.z
+        );
+    }
 }
 
 function render() {
@@ -791,9 +1327,47 @@ function attackPlayer(enemy) {
 }
 
 function playerDeath() {
-    alert('You died! Respawning...');
+    // Don't die if invincible
+    if (gameState.player.invincible) {
+        gameState.player.health = gameState.player.maxHealth;
+        return;
+    }
+    
+    // Show death screen
+    const deathScreen = document.getElementById('deathScreen');
+    const deathLevel = document.getElementById('deathLevel');
+    
+    deathLevel.textContent = `Level: ${gameState.player.level}`;
+    deathScreen.classList.add('active');
+}
+
+function respawnPlayer() {
+    // Hide death screen
+    const deathScreen = document.getElementById('deathScreen');
+    deathScreen.classList.remove('active');
+    
+    // Reset player
     gameState.player.health = gameState.player.maxHealth;
+    gameState.player.energy = gameState.player.maxEnergy;
     gameState.player.position = { x: 0, y: 0, z: 0 };
+    
+    // Clear enemies
+    gameState.enemies.forEach(enemy => {
+        if (enemy.mesh) {
+            scene.remove(enemy.mesh);
+        }
+    });
+    gameState.enemies = [];
+    
+    // Spawn new enemies
+    spawnEnemies();
+    
+    // Give temporary invincibility
+    gameState.player.invincible = true;
+    setTimeout(() => {
+        gameState.player.invincible = false;
+    }, 5000);
+    
     updateHUD();
 }
 
@@ -1294,17 +1868,120 @@ function zoomOut() {
     gameState.camera.distance = Math.min(gameState.camera.distance + 3, 50);
 }
 
+// Save/Load Game Functions
+function saveGame() {
+    try {
+        const saveData = {
+            player: {
+                level: gameState.player.level,
+                exp: gameState.player.exp,
+                expToNext: gameState.player.expToNext,
+                health: gameState.player.health,
+                maxHealth: gameState.player.maxHealth,
+                energy: gameState.player.energy,
+                maxEnergy: gameState.player.maxEnergy,
+                money: gameState.player.money,
+                faction: gameState.player.faction,
+                currentFruit: gameState.player.currentFruit,
+                inventory: gameState.player.inventory,
+                masteries: gameState.player.masteries,
+                position: gameState.player.position,
+                currentIsland: gameState.player.currentIsland,
+                currentQuest: gameState.player.currentQuest,
+                stats: gameState.player.stats
+            },
+            timestamp: Date.now()
+        };
+        
+        localStorage.setItem('bloxFruitsSave', JSON.stringify(saveData));
+        alert('Game saved successfully!');
+    } catch (error) {
+        console.error('Error saving game:', error);
+        alert('Failed to save game!');
+    }
+}
+
+function loadGame() {
+    try {
+        const saveData = localStorage.getItem('bloxFruitsSave');
+        if (!saveData) {
+            return false;
+        }
+        
+        const data = JSON.parse(saveData);
+        
+        // Restore player data
+        gameState.player.level = data.player.level;
+        gameState.player.exp = data.player.exp;
+        gameState.player.expToNext = data.player.expToNext;
+        gameState.player.health = data.player.health;
+        gameState.player.maxHealth = data.player.maxHealth;
+        gameState.player.energy = data.player.energy;
+        gameState.player.maxEnergy = data.player.maxEnergy;
+        gameState.player.money = data.player.money;
+        gameState.player.faction = data.player.faction;
+        gameState.player.currentFruit = data.player.currentFruit;
+        gameState.player.inventory = data.player.inventory;
+        gameState.player.masteries = data.player.masteries;
+        gameState.player.position = data.player.position;
+        gameState.player.currentIsland = data.player.currentIsland;
+        gameState.player.currentQuest = data.player.currentQuest;
+        gameState.player.stats = data.player.stats;
+        
+        return true;
+    } catch (error) {
+        console.error('Error loading game:', error);
+        return false;
+    }
+}
+
+function loadSavedGame() {
+    const loaded = loadGame();
+    if (loaded && gameState.player.faction) {
+        // Hide main menu and show game
+        const mainMenu = document.getElementById('mainMenu');
+        const gameScreen = document.getElementById('gameScreen');
+        
+        mainMenu.classList.remove('active');
+        mainMenu.style.display = 'none';
+        gameScreen.classList.add('active');
+        gameScreen.style.display = 'block';
+        
+        // Create player
+        if (playerMesh) {
+            scene.remove(playerMesh);
+        }
+        createPlayer();
+        
+        // Spawn enemies
+        spawnEnemies();
+        
+        // Update HUD
+        updateHUD();
+        
+        alert('Game loaded successfully!');
+    } else {
+        alert('No saved game found!');
+    }
+}
+
 // Keyboard Controls
 document.addEventListener('keydown', (e) => {
     gameState.keys[e.key] = true;
 
-    // Attack with Space (melee)
-    if (e.key === ' ') {
+    // Toggle Shift Lock with Shift key
+    if (e.key === 'Shift') {
         e.preventDefault();
-        playerAttack(0);
+        toggleShiftLock();
     }
 
-    // Fruit moves Z, X, C, V
+    // Jump with Space
+    if (e.key === ' ') {
+        e.preventDefault();
+        playerJump();
+    }
+
+    // Fruit moves Z, X, C, V (Z also does melee if no fruit)
     if (e.key === 'z' || e.key === 'Z') {
         playerAttack(0); // First move
     }
@@ -1339,6 +2016,26 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+function toggleShiftLock() {
+    gameState.camera.shiftLock = !gameState.camera.shiftLock;
+    const crosshair = document.getElementById('shiftLockCrosshair');
+    const canvas = document.getElementById('gameCanvas');
+    
+    if (gameState.camera.shiftLock) {
+        // Enable shift lock
+        crosshair.classList.add('active');
+        // Request pointer lock
+        canvas.requestPointerLock = canvas.requestPointerLock || canvas.mozRequestPointerLock;
+        canvas.requestPointerLock();
+    } else {
+        // Disable shift lock
+        crosshair.classList.remove('active');
+        // Exit pointer lock
+        document.exitPointerLock = document.exitPointerLock || document.mozExitPointerLock;
+        document.exitPointerLock();
+    }
+}
+
 document.addEventListener('keyup', (e) => {
     gameState.keys[e.key] = false;
 });
@@ -1346,28 +2043,71 @@ document.addEventListener('keyup', (e) => {
 // Mouse controls for camera rotation and attack
 let isDragging = false;
 let previousMouseX = 0;
+let previousMouseY = 0;
 
 document.addEventListener('mousedown', (e) => {
-    if (e.button === 0) { // Left click - attack
+    if (e.button === 0 && !e.target.closest('button, .modal')) { // Left click (not on UI)
         playerAttack();
     }
     if (e.button === 2) { // Right click - camera
         isDragging = true;
         previousMouseX = e.clientX;
+        previousMouseY = e.clientY;
+        document.body.style.cursor = 'grabbing';
     }
 });
 
 document.addEventListener('mousemove', (e) => {
+    // Handle shift lock mode with pointer lock
+    if (gameState.camera.shiftLock && document.pointerLockElement) {
+        const deltaX = e.movementX || 0;
+        const deltaY = e.movementY || 0;
+        
+        // Rotate camera with mouse movement
+        gameState.camera.angle -= deltaX * 0.003;
+        gameState.camera.pitch -= deltaY * 0.003;
+        gameState.camera.pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, gameState.camera.pitch));
+        
+        return;
+    }
+    
+    // Normal drag mode (right-click)
     if (isDragging) {
         const deltaX = e.clientX - previousMouseX;
-        gameState.camera.angle -= deltaX * 0.01;
+        const deltaY = e.clientY - previousMouseY;
+        
+        // Horizontal rotation (left/right) - rotate camera around player
+        gameState.camera.angle -= deltaX * 0.005;
+        
+        // Vertical rotation (up/down) - only in first-person mode
+        if (gameState.camera.distance <= 5) {
+            gameState.camera.pitch -= deltaY * 0.005;
+            // Clamp pitch to prevent looking too far up or down
+            gameState.camera.pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, gameState.camera.pitch));
+        }
+        
         previousMouseX = e.clientX;
+        previousMouseY = e.clientY;
     }
 });
 
-document.addEventListener('mouseup', () => {
-    isDragging = false;
+document.addEventListener('mouseup', (e) => {
+    if (e.button === 2) {
+        isDragging = false;
+        document.body.style.cursor = 'default';
+    }
 });
+
+// Mouse wheel for zoom
+document.addEventListener('wheel', (e) => {
+    if (gameState.player.faction) {
+        e.preventDefault();
+        const zoomSpeed = 2;
+        // Scroll down (positive deltaY) = zoom out (increase distance)
+        // Scroll up (negative deltaY) = zoom in (decrease distance)
+        gameState.camera.distance = Math.max(5, Math.min(50, gameState.camera.distance + e.deltaY * 0.01 * zoomSpeed));
+    }
+}, { passive: false });
 
 document.addEventListener('contextmenu', (e) => {
     e.preventDefault(); // Prevent context menu on right click
@@ -1543,6 +2283,48 @@ window.addEventListener('load', () => {
         }
         initGame();
         console.log('Game initialized successfully!');
+        
+        // Make functions globally accessible
+        window.selectFaction = selectFaction;
+        window.openShop = openShop;
+        window.closeShop = closeShop;
+        window.openInventory = openInventory;
+        window.closeInventory = closeInventory;
+        window.openQuestMenu = openQuestMenu;
+        window.closeQuestMenu = closeQuestMenu;
+        window.openStats = openStats;
+        window.closeStats = closeStats;
+        window.toggleMap = toggleMap;
+        window.buyFruit = buyFruit;
+        window.equipFruit = equipFruit;
+        window.acceptQuest = acceptQuest;
+        window.travelToIsland = travelToIsland;
+        window.zoomIn = zoomIn;
+        window.zoomOut = zoomOut;
+        window.respawnPlayer = respawnPlayer;
+        window.toggleShiftLock = toggleShiftLock;
+        window.saveGame = saveGame;
+        window.loadGame = loadGame;
+        window.loadSavedGame = loadSavedGame;
+        
+        const pirateBtn = document.querySelector('.faction-btn.pirate');
+        const marineBtn = document.querySelector('.faction-btn.marine');
+        
+        if (pirateBtn) {
+            pirateBtn.addEventListener('click', () => {
+                console.log('Pirate button clicked via event listener');
+                selectFaction('pirate');
+            });
+        }
+        
+        if (marineBtn) {
+            marineBtn.addEventListener('click', () => {
+                console.log('Marine button clicked via event listener');
+                selectFaction('marine');
+            });
+        }
+        
+        console.log('All functions made globally accessible and event listeners added');
     } catch(e) {
         console.error('Failed to initialize game:', e);
         alert('Failed to load game: ' + e.message);
